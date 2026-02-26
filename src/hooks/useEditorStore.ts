@@ -393,6 +393,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       for (let i = 0; i < page.placements.length; i++) {
         const p = page.placements[i];
         if (p && p.assetId) {
+          // Chỉ giữ placement nếu asset vẫn còn tồn tại
           if (assets.some((a) => a._id === p.assetId)) {
             currentSlotMap.set(`${page.pageIndex}-${i}`, p.assetId);
           }
@@ -400,22 +401,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       }
     }
 
-    // 2. Tìm assets chưa đặt ở bất kỳ slot nào
-    const placedAssetIds = new Set(currentSlotMap.values());
-    const unplacedAssetIds = assets
-      .filter((a) => !placedAssetIds.has(a._id))
-      .map((a) => a._id);
+    // 2. Tính số trang cần thiết (dựa trên tổng ảnh, đảm bảo đủ slot)
+    const totalPagesNeeded = Math.max(1, Math.ceil(assets.length / totalSlots));
 
-    // 3. Tính số trang cần thiết
-    const totalPlacements = currentSlotMap.size + unplacedAssetIds.length;
-    const totalPagesNeeded = Math.max(
-      1,
-      Math.ceil(totalPlacements / totalSlots),
-    );
-
-    // 4. Build pages mới — giữ slot cũ + auto-fill asset mới vào slot trống
+    // 3. Build pages — chỉ giữ slot đã có placement, slot trống để trống
+    //    KHÔNG auto-fill: user phải kéo thả thủ công
     const newPages: PrintPage[] = [];
-    let unplacedIdx = 0;
 
     for (let pageIdx = 0; pageIdx < totalPagesNeeded; pageIdx++) {
       const placements: (typeof pages)[0]["placements"] = [];
@@ -430,6 +421,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         const y = bleed + row * (frame.height + padding);
 
         if (existingAssetId) {
+          // Giữ nguyên placement đã kéo thả trước đó
           placements[slotIdx] = {
             assetId: existingAssetId,
             x,
@@ -438,17 +430,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
             height: frame.height,
             rotation: 0,
           };
-        } else if (unplacedIdx < unplacedAssetIds.length) {
-          placements[slotIdx] = {
-            assetId: unplacedAssetIds[unplacedIdx],
-            x,
-            y,
-            width: frame.width,
-            height: frame.height,
-            rotation: 0,
-          };
-          unplacedIdx++;
         }
+        // Slot trống: không push gì → placements[slotIdx] = undefined
       }
 
       newPages.push({ pageIndex: pageIdx, placements });

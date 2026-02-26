@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useCallback, useState } from "react";
+import { useEffect, useRef, useCallback, useState, useMemo } from "react";
 import {
   Canvas as FabricCanvas,
   Rect,
@@ -207,8 +207,7 @@ const EditorCanvas = () => {
         ? assets.find((a) => a._id === placement.assetId)
         : null;
 
-      // Highlight slot khi hover kéo thả
-      const isHoverTarget = isDragOver && hoverSlotIdx === slotIdx;
+      // Hover highlight giờ render qua HTML overlay, không trong canvas
 
       if (asset) {
         // Slot có ảnh
@@ -219,8 +218,8 @@ const EditorCanvas = () => {
             width: slotW,
             height: slotH,
             fill: "#f9fafb",
-            stroke: isHoverTarget ? "#6366f1" : "#e5e7eb",
-            strokeWidth: isHoverTarget ? 2 : 0.5,
+            stroke: "#e5e7eb",
+            strokeWidth: 0.5,
             selectable: false,
             evented: false,
           }),
@@ -332,21 +331,20 @@ const EditorCanvas = () => {
             top: y,
             width: slotW,
             height: slotH,
-            fill: isHoverTarget ? "#eef2ff" : "#f9fafb",
-            stroke: isHoverTarget ? "#6366f1" : "#d1d5db",
-            strokeWidth: isHoverTarget ? 2 : 0.8,
-            strokeDashArray: isHoverTarget ? undefined : [5, 4],
+            fill: "#f9fafb",
+            stroke: "#d1d5db",
+            strokeWidth: 0.8,
+            strokeDashArray: [5, 4],
             selectable: false,
             evented: false,
           }),
         );
         canvas.add(
-          new FabricText(isHoverTarget ? "Thả vào đây ✓" : "Kéo ảnh vào đây", {
+          new FabricText("Kéo ảnh vào đây", {
             left: x + slotW / 2,
             top: y + slotH / 2,
-            fontSize: isHoverTarget ? 10 : 9,
-            fill: isHoverTarget ? "#6366f1" : "#9ca3af",
-            fontWeight: isHoverTarget ? "bold" : "normal",
+            fontSize: 9,
+            fill: "#9ca3af",
             fontFamily: "Inter, system-ui, sans-serif",
             originX: "center",
             originY: "center",
@@ -377,15 +375,25 @@ const EditorCanvas = () => {
     }
 
     canvas.renderAll();
-  }, [
-    pages,
-    currentPage,
-    layoutConfig,
-    assets,
-    drawCropMarks,
-    isDragOver,
-    hoverSlotIdx,
-  ]);
+  }, [pages, currentPage, layoutConfig, assets, drawCropMarks]);
+
+  // ===== Tính vị trí slot cho hover overlay (không trigger re-render canvas) =====
+  const slotPositions = useMemo(() => {
+    const { rows, cols, frameSize, bleed, padding } = layoutConfig;
+    const frame = FRAME_DIMENSIONS[frameSize];
+    const positions: { x: number; y: number; w: number; h: number }[] = [];
+    for (let slotIdx = 0; slotIdx < rows * cols; slotIdx++) {
+      const col = slotIdx % cols;
+      const row = Math.floor(slotIdx / cols);
+      positions.push({
+        x: (bleed + col * (frame.width + padding)) * SCALE,
+        y: (bleed + row * (frame.height + padding)) * SCALE,
+        w: frame.width * SCALE,
+        h: frame.height * SCALE,
+      });
+    }
+    return positions;
+  }, [layoutConfig]);
 
   // ===== Drag & Drop handlers =====
 
@@ -562,9 +570,29 @@ const EditorCanvas = () => {
         {/* Canvas wrapper — ref dùng để tính tọa độ drop */}
         <div
           ref={canvasContainerRef}
-          className="shadow-2xl border border-gray-200 overflow-hidden transition-all"
+          className="relative shadow-2xl border border-gray-200 overflow-hidden transition-all"
         >
           <canvas ref={canvasRef} />
+
+          {/* HTML overlay cho hover highlight — không trigger canvas re-render */}
+          {isDragOver &&
+            hoverSlotIdx !== null &&
+            slotPositions[hoverSlotIdx] && (
+              <div
+                className="absolute pointer-events-none z-10 border-2 border-indigo-500 rounded-sm"
+                style={{
+                  left: `${slotPositions[hoverSlotIdx].x}px`,
+                  top: `${slotPositions[hoverSlotIdx].y}px`,
+                  width: `${slotPositions[hoverSlotIdx].w}px`,
+                  height: `${slotPositions[hoverSlotIdx].h}px`,
+                  backgroundColor: "rgba(238, 242, 255, 0.5)",
+                }}
+              >
+                <span className="absolute inset-0 flex items-center justify-center text-indigo-600 text-[10px] font-bold">
+                  Thả vào đây ✓
+                </span>
+              </div>
+            )}
         </div>
 
         {/* Phân trang */}

@@ -9,13 +9,11 @@ import {
   FabricText,
 } from "fabric";
 import { useEditorStore } from "@/hooks/useEditorStore";
-import { A4_WIDTH_MM, A4_HEIGHT_MM, FRAME_DIMENSIONS } from "@/types/print";
+import { FRAME_DIMENSIONS, getPaperDimensions } from "@/types/print";
 import { getAssetUrl, uploadPhotos } from "@/lib/api";
 
 /** Tỉ lệ scale: 1mm → pixel trên canvas preview */
 const SCALE = 2;
-const CANVAS_WIDTH = A4_WIDTH_MM * SCALE; // 420
-const CANVAS_HEIGHT = A4_HEIGHT_MM * SCALE; // 594
 
 const EditorCanvas = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -24,22 +22,30 @@ const EditorCanvas = () => {
   const [isDragOver, setIsDragOver] = useState(false);
   const [hoverSlotIdx, setHoverSlotIdx] = useState<number | null>(null);
 
-  const { pages, currentPage, layoutConfig, assets, addAssets } =
+  const { pages, currentPage, layoutConfig, assets, addAssets, orientation } =
     useEditorStore();
 
   // ===== Helper: tính slot index từ tọa độ pixel trên canvas =====
   const getSlotFromPosition = useCallback(
     (pixelX: number, pixelY: number): number | null => {
-      const { rows, cols, frameSize, bleed, padding } = layoutConfig;
+      const { rows, cols, frameSize, bleed, padding, paperSize } = layoutConfig;
+      const paperDim = getPaperDimensions(paperSize, orientation);
       const frame = FRAME_DIMENSIONS[frameSize];
       const slotW = frame.width * SCALE;
       const slotH = frame.height * SCALE;
 
+      const gridW = cols * frame.width + Math.max(0, cols - 1) * padding;
+      const gridH = rows * frame.height + Math.max(0, rows - 1) * padding;
+      const startX =
+        bleed + Math.max(0, (paperDim.width - 2 * bleed - gridW) / 2);
+      const startY =
+        bleed + Math.max(0, (paperDim.height - 2 * bleed - gridH) / 2);
+
       for (let slotIdx = 0; slotIdx < rows * cols; slotIdx++) {
         const col = slotIdx % cols;
         const row = Math.floor(slotIdx / cols);
-        const x = (bleed + col * (frame.width + padding)) * SCALE;
-        const y = (bleed + row * (frame.height + padding)) * SCALE;
+        const x = (startX + col * (frame.width + padding)) * SCALE;
+        const y = (startY + row * (frame.height + padding)) * SCALE;
 
         if (
           pixelX >= x &&
@@ -52,7 +58,7 @@ const EditorCanvas = () => {
       }
       return null;
     },
-    [layoutConfig],
+    [layoutConfig, orientation],
   );
 
   // ===== Helper: lấy tọa độ pixel trên canvas từ mouse event =====
@@ -70,7 +76,15 @@ const EditorCanvas = () => {
 
   /** Vẽ Crop Marks ở 4 góc */
   const drawCropMarks = useCallback(
-    (canvas: FabricCanvas, x: number, y: number, w: number, h: number) => {
+    (
+      canvas: FabricCanvas,
+      x: number,
+      y: number,
+      w: number,
+      h: number,
+      canvasW: number,
+      canvasH: number,
+    ) => {
       const markLen = 8;
       const gap = 2;
       const lineProps = {
@@ -83,22 +97,12 @@ const EditorCanvas = () => {
       const marks: [number, number, number, number][] = [
         [Math.max(0, x - gap - markLen), y, x - gap, y],
         [x, Math.max(0, y - gap - markLen), x, y - gap],
-        [x + w + gap, y, Math.min(CANVAS_WIDTH, x + w + gap + markLen), y],
+        [x + w + gap, y, Math.min(canvasW, x + w + gap + markLen), y],
         [x + w, Math.max(0, y - gap - markLen), x + w, y - gap],
         [Math.max(0, x - gap - markLen), y + h, x - gap, y + h],
-        [x, y + h + gap, x, Math.min(CANVAS_HEIGHT, y + h + gap + markLen)],
-        [
-          x + w + gap,
-          y + h,
-          Math.min(CANVAS_WIDTH, x + w + gap + markLen),
-          y + h,
-        ],
-        [
-          x + w,
-          y + h + gap,
-          x + w,
-          Math.min(CANVAS_HEIGHT, y + h + gap + markLen),
-        ],
+        [x, y + h + gap, x, Math.min(canvasH, y + h + gap + markLen)],
+        [x + w + gap, y + h, Math.min(canvasW, x + w + gap + markLen), y + h],
+        [x + w, y + h + gap, x + w, Math.min(canvasH, y + h + gap + markLen)],
       ];
 
       for (const [x1, y1, x2, y2] of marks) {
@@ -117,6 +121,7 @@ const EditorCanvas = () => {
     canvas.backgroundColor = "#ffffff";
 
     const {
+      paperSize,
       bleed,
       padding,
       rows,
@@ -125,18 +130,23 @@ const EditorCanvas = () => {
       showCropMarks,
       showSafeZone,
     } = layoutConfig;
+    const orientationState = useEditorStore.getState().orientation;
+    const paperDim = getPaperDimensions(paperSize, orientationState);
     const frame = FRAME_DIMENSIONS[frameSize];
     const totalSlots = rows * cols;
 
-    // Tính kích thước canvas thực tế dựa trên grid (không cố định A4)
-    const contentW = cols * frame.width + (cols - 1) * padding + 2 * bleed;
-    const contentH = rows * frame.height + (rows - 1) * padding + 2 * bleed;
+    const gridW = cols * frame.width + Math.max(0, cols - 1) * padding;
+    const gridH = rows * frame.height + Math.max(0, rows - 1) * padding;
+    const startX =
+      bleed + Math.max(0, (paperDim.width - 2 * bleed - gridW) / 2);
+    const startY =
+      bleed + Math.max(0, (paperDim.height - 2 * bleed - gridH) / 2);
 
-    // Giới hạn: không nhỏ hơn A4 để có đủ không gian hiển thị
-    const canvasW = Math.max(A4_WIDTH_MM, contentW) * SCALE;
-    const canvasH = Math.max(A4_HEIGHT_MM, contentH) * SCALE;
+    // Kích thước canvas cố định theo khổ giấy
+    const canvasW = paperDim.width * SCALE;
+    const canvasH = paperDim.height * SCALE;
 
-    // Resize canvas cho vừa nội dung
+    // Resize canvas cho vừa khổ giấy
     canvas.setDimensions({ width: canvasW, height: canvasH });
 
     // Cập nhật container wrapper để khớp
@@ -148,31 +158,6 @@ const EditorCanvas = () => {
     const bleedPx = bleed * SCALE;
     const slotW = frame.width * SCALE;
     const slotH = frame.height * SCALE;
-
-    // Grid nền căn chỉnh
-    const cellW = canvasW / cols;
-    const cellH = canvasH / rows;
-
-    for (let i = 1; i < cols; i++) {
-      canvas.add(
-        new Line([cellW * i, 0, cellW * i, canvasH], {
-          stroke: "#eeeeee",
-          strokeWidth: 0.5,
-          selectable: false,
-          evented: false,
-        }),
-      );
-    }
-    for (let j = 1; j < rows; j++) {
-      canvas.add(
-        new Line([0, cellH * j, canvasW, cellH * j], {
-          stroke: "#eeeeee",
-          strokeWidth: 0.5,
-          selectable: false,
-          evented: false,
-        }),
-      );
-    }
 
     // Vùng safe zone viền dashed
     if (showSafeZone && bleedPx > 0) {
@@ -199,8 +184,8 @@ const EditorCanvas = () => {
     for (let slotIdx = 0; slotIdx < totalSlots; slotIdx++) {
       const col = slotIdx % cols;
       const row = Math.floor(slotIdx / cols);
-      const x = (bleed + col * (frame.width + padding)) * SCALE;
-      const y = (bleed + row * (frame.height + padding)) * SCALE;
+      const x = (startX + col * (frame.width + padding)) * SCALE;
+      const y = (startY + row * (frame.height + padding)) * SCALE;
 
       const placement = page?.placements[slotIdx];
       const asset = placement
@@ -233,30 +218,80 @@ const EditorCanvas = () => {
 
           const imgW = img.width || 1;
           const imgH = img.height || 1;
-          const scaleX = slotW / imgW;
-          const scaleY = slotH / imgH;
-          const scale = Math.max(scaleX, scaleY);
 
-          const scaledW = imgW * scale;
-          const scaledH = imgH * scale;
-          const offsetX = (scaledW - slotW) / 2;
-          const offsetY = (scaledH - slotH) / 2;
+          // Mặc định scale để "cover" (điền đầy) slot
+          const defaultScaleX = slotW / imgW;
+          const defaultScaleY = slotH / imgH;
+          const defaultScale = Math.max(defaultScaleX, defaultScaleY);
+
+          // Lấy transform state từ store (nếu user đã từng thao tác)
+          const customScale = placement.imageScale ?? defaultScale;
+          const scaledW = imgW * customScale;
+          const scaledH = imgH * customScale;
+
+          // Offset mặc định là canh giữa, nếu user đã từng dịch chuyển/xoay thì lấy thông số đó
+          const defaultOffsetX = (scaledW - slotW) / 2;
+          const defaultOffsetY = (scaledH - slotH) / 2;
+
+          const customLeft =
+            placement.imageOffsetX !== undefined
+              ? x + placement.imageOffsetX
+              : x - defaultOffsetX;
+          const customTop =
+            placement.imageOffsetY !== undefined
+              ? y + placement.imageOffsetY
+              : y - defaultOffsetY;
+          const customRotation = placement.imageRotation ?? 0;
 
           img.set({
-            left: x - offsetX,
-            top: y - offsetY,
-            scaleX: scale,
-            scaleY: scale,
-            selectable: false,
-            evented: false,
-            clipPath: new Rect({
-              left: x,
-              top: y,
-              width: slotW,
-              height: slotH,
-              absolutePositioned: true,
-            }),
+            left: customLeft,
+            top: customTop,
+            scaleX: customScale,
+            scaleY: customScale,
+            angle: customRotation,
+            selectable: true,
+            evented: true,
+            hasControls: true,
+            hasBorders: true,
+            borderColor: "#6366f1",
+            cornerColor: "#4f46e5",
+            borderDashArray: [4, 4], // Nét đứt mang phong cách Figma
+            transparentCorners: false,
+            lockUniScaling: true,
+            // KHÔNG set clipPath. Chúng ta sẽ override render để xén ảnh
           });
+
+          // Gắn data "bí mật" vào fabric object để lúc bắt sự kiện
+          // @ts-ignore
+          img.set("_customSlotIdx", slotIdx);
+
+          // Hack 1: Ghi đè hàm render để TỰ TAY gọi ctx.clip() giới hạn pixel ảnh.
+          // Cách này không dùng clipPath của Fabric nên hoàn toàn không ảnh hưởng đến Controls (vùng viền xanh).
+          const originalRender = img.render.bind(img);
+          img.render = function (ctx) {
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(x, y, slotW, slotH);
+            ctx.clip();
+            // @ts-ignore
+            originalRender(ctx);
+            ctx.restore();
+          };
+
+          // Hack 2: Ngăn chặn bắt sự kiện click ở phần ảnh bị cắt dư thừa ngoài khung
+          const originalContainsPoint = img.containsPoint.bind(img);
+          img.containsPoint = function (point: any) {
+            if (
+              point.x >= x &&
+              point.x <= x + slotW &&
+              point.y >= y &&
+              point.y <= y + slotH
+            ) {
+              return originalContainsPoint(point);
+            }
+            return false;
+          };
+
           canvas.add(img);
 
           // Highlight khi chọn
@@ -353,16 +388,41 @@ const EditorCanvas = () => {
           }),
         );
       }
+    }
 
-      if (showCropMarks) drawCropMarks(canvas, x, y, slotW, slotH);
+    // Bước 3: Vẽ viền slot và crop marks
+    for (let slotIdx = 0; slotIdx < totalSlots; slotIdx++) {
+      const col = slotIdx % cols;
+      const row = Math.floor(slotIdx / cols);
+      const x = (startX + col * (frame.width + padding)) * SCALE;
+      const y = (startY + row * (frame.height + padding)) * SCALE;
+
+      // Viền mảnh của chính slot đó
+      canvas.add(
+        new Rect({
+          left: x,
+          top: y,
+          width: slotW,
+          height: slotH,
+          fill: "transparent",
+          stroke: "#e5e7eb",
+          strokeWidth: 1,
+          selectable: false,
+          evented: false,
+        }),
+      );
+
+      if (showCropMarks) {
+        drawCropMarks(canvas, x, y, slotW, slotH, canvasW, canvasH);
+      }
     }
 
     // Guide text khi chưa có ảnh nào trên trang
     if (!page || page.placements.length === 0) {
       canvas.add(
         new FabricText("Kéo ảnh từ sidebar thả vào ô", {
-          left: CANVAS_WIDTH / 2,
-          top: CANVAS_HEIGHT / 2,
+          left: canvasW / 2,
+          top: canvasH / 2,
           fontSize: 14,
           fill: "#9ca3af",
           fontFamily: "Inter, system-ui, sans-serif",
@@ -379,21 +439,30 @@ const EditorCanvas = () => {
 
   // ===== Tính vị trí slot cho hover overlay (không trigger re-render canvas) =====
   const slotPositions = useMemo(() => {
-    const { rows, cols, frameSize, bleed, padding } = layoutConfig;
+    const { rows, cols, frameSize, bleed, padding, paperSize } = layoutConfig;
+    const paperDim = getPaperDimensions(paperSize, orientation);
     const frame = FRAME_DIMENSIONS[frameSize];
+
+    const gridW = cols * frame.width + Math.max(0, cols - 1) * padding;
+    const gridH = rows * frame.height + Math.max(0, rows - 1) * padding;
+    const startX =
+      bleed + Math.max(0, (paperDim.width - 2 * bleed - gridW) / 2);
+    const startY =
+      bleed + Math.max(0, (paperDim.height - 2 * bleed - gridH) / 2);
+
     const positions: { x: number; y: number; w: number; h: number }[] = [];
     for (let slotIdx = 0; slotIdx < rows * cols; slotIdx++) {
       const col = slotIdx % cols;
       const row = Math.floor(slotIdx / cols);
       positions.push({
-        x: (bleed + col * (frame.width + padding)) * SCALE,
-        y: (bleed + row * (frame.height + padding)) * SCALE,
+        x: (startX + col * (frame.width + padding)) * SCALE,
+        y: (startY + row * (frame.height + padding)) * SCALE,
         w: frame.width * SCALE,
         h: frame.height * SCALE,
       });
     }
     return positions;
-  }, [layoutConfig]);
+  }, [layoutConfig, orientation]);
 
   // ===== Drag & Drop handlers =====
 
@@ -537,11 +606,80 @@ const EditorCanvas = () => {
   useEffect(() => {
     if (!canvasRef.current || fabricRef.current) return;
 
+    const config = useEditorStore.getState().layoutConfig;
+    const orientation = useEditorStore.getState().orientation;
+    const paperDim = getPaperDimensions(config.paperSize, orientation);
+
     const canvas = new FabricCanvas(canvasRef.current, {
-      width: A4_WIDTH_MM * SCALE,
-      height: A4_HEIGHT_MM * SCALE,
+      width: paperDim.width * SCALE,
+      height: paperDim.height * SCALE,
       backgroundColor: "#ffffff",
       selection: false,
+      controlsAboveOverlay: true, // Quan trọng: báo Fabric luôn vẽ controls lên upperCanvas (trên cùng), bất chấp các layer Rect mask đè lên
+      preserveObjectStacking: true, // Ngăn Fabric tự động trồi ảnh lên trên cùng khi click vào, giữ ảnh luôn nằm dưới Mask
+    });
+
+    // Lắng nghe thao tác thay đổi ảnh (kéo, xoay, scale)
+    canvas.on("object:modified", (e) => {
+      const target = e.target;
+      if (!target) return;
+
+      // @ts-ignore
+      const slotIdx = target._customSlotIdx;
+      if (slotIdx !== undefined && typeof slotIdx === "number") {
+        // Lấy tọa độ ban đầu của ô để trừ ra offsetX / offsetY tương đối
+        const { cols, padding, bleed, frameSize, paperSize } =
+          useEditorStore.getState().layoutConfig;
+        const orientation = useEditorStore.getState().orientation;
+        const paperDimLocal = getPaperDimensions(paperSize, orientation);
+        const frame = FRAME_DIMENSIONS[frameSize];
+
+        const rowLocal = Math.floor(slotIdx / cols);
+        const colLocal = slotIdx % cols;
+        const gridWLocal = cols * frame.width + Math.max(0, cols - 1) * padding;
+        const gridHLocal =
+          cols * frame.height + Math.max(0, cols - 1) * padding; // Note: using cols for rows to fix
+
+        // Re-calculate the grid dimension properly based on rows
+        const currentConfig = useEditorStore.getState().layoutConfig;
+        const totalRows = currentConfig.rows;
+        const actualGridH =
+          totalRows * frame.height + Math.max(0, totalRows - 1) * padding;
+
+        const startXLocal =
+          bleed +
+          Math.max(0, (paperDimLocal.width - 2 * bleed - gridWLocal) / 2);
+        const startYLocal =
+          bleed +
+          Math.max(0, (paperDimLocal.height - 2 * bleed - actualGridH) / 2);
+
+        const slotX =
+          (startXLocal + colLocal * (frame.width + padding)) * SCALE;
+        const slotY =
+          (startYLocal + rowLocal * (frame.height + padding)) * SCALE;
+
+        const left = target.left ?? 0;
+        const top = target.top ?? 0;
+        const scaleX = target.scaleX ?? 1;
+        const angle = target.angle ?? 0;
+
+        // Tính offsets (tương đối của ảnh so với viền trái/trên của slot)
+        const diffX = left - slotX;
+        const diffY = top - slotY;
+
+        useEditorStore
+          .getState()
+          .updatePlacementTransform(
+            useEditorStore.getState().currentPage,
+            slotIdx,
+            {
+              imageScale: scaleX,
+              imageOffsetX: diffX,
+              imageOffsetY: diffY,
+              imageRotation: angle,
+            },
+          );
+      }
     });
 
     fabricRef.current = canvas;
@@ -566,11 +704,11 @@ const EditorCanvas = () => {
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <div className="flex flex-col items-center gap-4">
+      <div className="flex flex-col items-center gap-6">
         {/* Canvas wrapper — ref dùng để tính tọa độ drop */}
         <div
           ref={canvasContainerRef}
-          className="relative shadow-2xl border border-gray-200 overflow-hidden transition-all"
+          className="relative shadow-2xl border border-gray-200 overflow-hidden transition-all bg-white"
         >
           <canvas ref={canvasRef} />
 
@@ -597,17 +735,20 @@ const EditorCanvas = () => {
 
         {/* Phân trang */}
         {pages.length > 1 && (
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-center gap-2 mt-2 p-2 bg-white rounded-xl shadow-sm border border-gray-100 mb-8">
+            <span className="text-sm text-gray-400 font-medium px-2">
+              Trang:
+            </span>
             {pages.map((_, idx) => (
               <button
                 key={idx}
                 onClick={() => useEditorStore.getState().setCurrentPage(idx)}
-                className={`w-8 h-8 rounded-lg text-sm font-medium transition-all ${
+                className={`w-9 h-9 flex items-center justify-center rounded-lg text-sm font-semibold transition-all ${
                   idx === currentPage
-                    ? "bg-brand-600 text-white shadow-md"
-                    : "bg-white text-gray-500 border border-gray-200 hover:border-brand-500"
+                    ? "bg-indigo-600 text-white shadow-md ring-2 ring-indigo-200"
+                    : "bg-gray-50 text-gray-600 border border-gray-200 hover:border-indigo-400 hover:bg-indigo-50"
                 }`}
-                aria-label={`Trang ${idx + 1}`}
+                aria-label={`Đi tới trang ${idx + 1}`}
               >
                 {idx + 1}
               </button>

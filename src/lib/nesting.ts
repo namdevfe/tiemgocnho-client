@@ -101,6 +101,7 @@ export const performNesting = (
   );
 
   const layout: LayoutConfig = {
+    paperSize: "a4",
     rows: maxRows,
     cols: maxCols,
     frameSize,

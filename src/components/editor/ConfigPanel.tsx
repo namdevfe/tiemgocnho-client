@@ -1,6 +1,11 @@
 "use client";
 
 import { useEditorStore } from "@/hooks/useEditorStore";
+import {
+  FRAME_DIMENSIONS,
+  getPaperDimensions,
+  calculateMaxGrid,
+} from "@/types/print";
 
 /**
  * ConfigPanel (Right Sidebar) - w-80
@@ -10,6 +15,7 @@ const ConfigPanel = () => {
   const {
     layoutConfig,
     orientation,
+    setPaperSize,
     setOrientation,
     setRows,
     setCols,
@@ -18,6 +24,20 @@ const ConfigPanel = () => {
     toggleSafeZone,
     toggleCropMarks,
   } = useEditorStore();
+
+  // Helper types cho select
+  type PaperSizeOption = import("@/types/print").PaperSize;
+
+  const paperDim = getPaperDimensions(layoutConfig.paperSize, orientation);
+  const frameDim = FRAME_DIMENSIONS[layoutConfig.frameSize];
+  const { maxCols, maxRows } = calculateMaxGrid(
+    paperDim.width,
+    paperDim.height,
+    frameDim.width,
+    frameDim.height,
+    layoutConfig.padding,
+    layoutConfig.bleed,
+  );
 
   return (
     <aside className="w-80 bg-white border-l flex flex-col shrink-0 overflow-y-auto">
@@ -32,7 +52,8 @@ const ConfigPanel = () => {
           <div className="space-y-4">
             <select
               className="w-full rounded-lg border-gray-200 text-sm focus:border-brand-500 focus:ring-brand-500 py-2.5 px-3 border"
-              defaultValue="a4"
+              value={layoutConfig.paperSize}
+              onChange={(e) => setPaperSize(e.target.value as PaperSizeOption)}
               aria-label="Chọn khổ giấy"
             >
               <option value="a4">Giấy A4 (210 x 297mm)</option>
@@ -82,7 +103,7 @@ const ConfigPanel = () => {
               <input
                 type="number"
                 min={1}
-                max={10}
+                max={maxRows}
                 value={layoutConfig.rows}
                 onChange={(e) => setRows(parseInt(e.target.value) || 1)}
                 className="w-full rounded-lg border-gray-200 text-sm py-2 px-3 border focus:border-brand-500 focus:ring-brand-500 focus:outline-none"
@@ -96,7 +117,7 @@ const ConfigPanel = () => {
               <input
                 type="number"
                 min={1}
-                max={10}
+                max={maxCols}
                 value={layoutConfig.cols}
                 onChange={(e) => setCols(parseInt(e.target.value) || 1)}
                 className="w-full rounded-lg border-gray-200 text-sm py-2 px-3 border focus:border-brand-500 focus:ring-brand-500 focus:outline-none"

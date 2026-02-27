@@ -8,6 +8,9 @@ import {
   Millimeter,
   NestingResult,
   FRAME_DIMENSIONS,
+  PaperSize,
+  getPaperDimensions,
+  calculateMaxGrid,
 } from "@/types/print";
 import {
   getAssets,
@@ -57,6 +60,17 @@ interface EditorState {
   addAssets: (newAssets: AssetInfoExtended[]) => void;
   removeAsset: (id: string) => void;
   placeAssetInSlot: (pageIdx: number, slotIdx: number, assetId: string) => void;
+  updatePlacementTransform: (
+    pageIdx: number,
+    slotIdx: number,
+    transform: {
+      imageScale?: number;
+      imageOffsetX?: number;
+      imageOffsetY?: number;
+      imageRotation?: number;
+    },
+  ) => void;
+  setPaperSize: (size: PaperSize) => void;
   setFrameSize: (size: FrameSize) => void;
   setBleed: (bleed: Millimeter) => void;
   setPadding: (padding: Millimeter) => void;
@@ -85,11 +99,33 @@ interface EditorState {
 /** Auto-save sau khi user ngừng thao tác 2 giây */
 const AUTO_SAVE_DELAY = 2000;
 
+const constrainGrid = (
+  config: LayoutConfig,
+  orientation: PaperOrientation,
+): LayoutConfig => {
+  const paperDim = getPaperDimensions(config.paperSize, orientation);
+  const frameDim = FRAME_DIMENSIONS[config.frameSize];
+  const { maxCols, maxRows } = calculateMaxGrid(
+    paperDim.width,
+    paperDim.height,
+    frameDim.width,
+    frameDim.height,
+    config.padding,
+    config.bleed,
+  );
+  return {
+    ...config,
+    cols: Math.min(Math.max(1, config.cols), maxCols),
+    rows: Math.min(Math.max(1, config.rows), maxRows),
+  };
+};
+
 export const useEditorStore = create<EditorState>((set, get) => ({
   projectId: null,
   projectName: "",
   assets: [],
   layoutConfig: {
+    paperSize: "a4",
     rows: 2,
     cols: 2,
     frameSize: "10x15",
@@ -126,15 +162,21 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         projectName: project.name,
         assets: projectAssets,
         pages: project.pages || [],
-        layoutConfig: project.layoutConfig || {
-          rows: 2,
-          cols: 2,
-          frameSize: "10x15",
-          bleed: 3,
-          padding: 5,
-          showCropMarks: true,
-          showSafeZone: true,
-        },
+        layoutConfig: project.layoutConfig
+          ? {
+              ...project.layoutConfig,
+              paperSize: project.layoutConfig.paperSize || "a4",
+            }
+          : {
+              paperSize: "a4",
+              rows: 2,
+              cols: 2,
+              frameSize: "10x15",
+              bleed: 3,
+              padding: 5,
+              showCropMarks: true,
+              showSafeZone: true,
+            },
         orientation: project.orientation || "portrait",
         currentPage: project.currentPage || 0,
         isDirty: false,
@@ -202,6 +244,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       isSaving: false,
       _saveTimer: null,
       layoutConfig: {
+        paperSize: "a4",
         rows: 2,
         cols: 2,
         frameSize: "10x15",
@@ -269,14 +312,22 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   placeAssetInSlot: (pageIdx, slotIdx, assetId) => {
-    const { pages, layoutConfig } = get();
+    const { pages, layoutConfig, orientation } = get();
+    const paperDim = getPaperDimensions(layoutConfig.paperSize, orientation);
     const frame = FRAME_DIMENSIONS[layoutConfig.frameSize];
-    const { bleed, padding, cols } = layoutConfig;
+    const { bleed, padding, cols, rows } = layoutConfig;
+
+    const gridW = cols * frame.width + Math.max(0, cols - 1) * padding;
+    const gridH = rows * frame.height + Math.max(0, rows - 1) * padding;
+    const startX =
+      bleed + Math.max(0, (paperDim.width - 2 * bleed - gridW) / 2);
+    const startY =
+      bleed + Math.max(0, (paperDim.height - 2 * bleed - gridH) / 2);
 
     const col = slotIdx % cols;
     const row = Math.floor(slotIdx / cols);
-    const x = bleed + col * (frame.width + padding);
-    const y = bleed + row * (frame.height + padding);
+    const x = startX + col * (frame.width + padding);
+    const y = startY + row * (frame.height + padding);
 
     const placement: PhotoPlacement = {
       assetId,
@@ -298,29 +349,77 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     get().markDirty();
   },
 
+  updatePlacementTransform: (pageIdx, slotIdx, transform) => {
+    const { pages } = get();
+    if (!pages[pageIdx] || !pages[pageIdx].placements[slotIdx]) return;
+
+    const updatedPages = [...pages];
+    const pageObj = { ...updatedPages[pageIdx] };
+    const placements = [...pageObj.placements];
+
+    const currentPlacement = placements[slotIdx];
+    if (currentPlacement) {
+      placements[slotIdx] = {
+        ...currentPlacement,
+        ...transform,
+      };
+      pageObj.placements = placements;
+      updatedPages[pageIdx] = pageObj;
+      set({ pages: updatedPages });
+      get().markDirty();
+    }
+  },
+
+  setPaperSize: (size) => {
+    set((state) => ({
+      layoutConfig: constrainGrid(
+        { ...state.layoutConfig, paperSize: size },
+        state.orientation,
+      ),
+    }));
+    get().recalculatePages();
+    get().markDirty();
+  },
+
   setFrameSize: (size) => {
     set((state) => ({
-      layoutConfig: { ...state.layoutConfig, frameSize: size },
+      layoutConfig: constrainGrid(
+        { ...state.layoutConfig, frameSize: size },
+        state.orientation,
+      ),
     }));
     get().recalculatePages();
     get().markDirty();
   },
 
   setBleed: (bleed) => {
-    set((state) => ({ layoutConfig: { ...state.layoutConfig, bleed } }));
+    set((state) => ({
+      layoutConfig: constrainGrid(
+        { ...state.layoutConfig, bleed },
+        state.orientation,
+      ),
+    }));
     get().recalculatePages();
     get().markDirty();
   },
 
   setPadding: (padding) => {
-    set((state) => ({ layoutConfig: { ...state.layoutConfig, padding } }));
+    set((state) => ({
+      layoutConfig: constrainGrid(
+        { ...state.layoutConfig, padding },
+        state.orientation,
+      ),
+    }));
     get().recalculatePages();
     get().markDirty();
   },
 
   setGutter: (gutter) => {
     set((state) => ({
-      layoutConfig: { ...state.layoutConfig, padding: gutter },
+      layoutConfig: constrainGrid(
+        { ...state.layoutConfig, padding: gutter },
+        state.orientation,
+      ),
     }));
     get().recalculatePages();
     get().markDirty();
@@ -328,7 +427,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   setRows: (rows) => {
     set((state) => ({
-      layoutConfig: { ...state.layoutConfig, rows: Math.max(1, rows) },
+      layoutConfig: constrainGrid(
+        { ...state.layoutConfig, rows },
+        state.orientation,
+      ),
     }));
     get().recalculatePages();
     get().markDirty();
@@ -336,14 +438,20 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   setCols: (cols) => {
     set((state) => ({
-      layoutConfig: { ...state.layoutConfig, cols: Math.max(1, cols) },
+      layoutConfig: constrainGrid(
+        { ...state.layoutConfig, cols },
+        state.orientation,
+      ),
     }));
     get().recalculatePages();
     get().markDirty();
   },
 
   setOrientation: (orientation) => {
-    set({ orientation });
+    set((state) => ({
+      orientation,
+      layoutConfig: constrainGrid(state.layoutConfig, orientation),
+    }));
     get().recalculatePages();
     get().markDirty();
   },
@@ -376,62 +484,80 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setActiveTab: (tab) => set({ activeTab: tab }),
 
   recalculatePages: () => {
-    const { assets, pages, layoutConfig } = get();
+    const { assets, pages, layoutConfig, orientation } = get();
 
     if (assets.length === 0) {
       set({ pages: [], nestingResult: null });
       return;
     }
 
+    const paperDim = getPaperDimensions(layoutConfig.paperSize, orientation);
     const frame = FRAME_DIMENSIONS[layoutConfig.frameSize];
     const { rows, cols, bleed, padding } = layoutConfig;
     const totalSlots = rows * cols;
 
-    // 1. Thu thập slot→assetId từ pages hiện tại (giữ manual placements)
-    const currentSlotMap = new Map<string, string>();
+    const gridW = cols * frame.width + Math.max(0, cols - 1) * padding;
+    const gridH = rows * frame.height + Math.max(0, rows - 1) * padding;
+    const startX =
+      bleed + Math.max(0, (paperDim.width - 2 * bleed - gridW) / 2);
+    const startY =
+      bleed + Math.max(0, (paperDim.height - 2 * bleed - gridH) / 2);
+
+    // 1. Phẳng hóa (flatten) danh sách assetId hiện đang được xếp trên các trang theo đúng thứ tự hiển thị
+    // Cách này sẽ giúp dàn lại toàn bộ ảnh khi user đổi số hàng, rớt trang đúng chuẩn.
+    const orderedAssetIds: string[] = [];
     for (const page of pages) {
-      for (let i = 0; i < page.placements.length; i++) {
-        const p = page.placements[i];
+      for (const p of page.placements) {
         if (p && p.assetId) {
-          // Chỉ giữ placement nếu asset vẫn còn tồn tại
           if (assets.some((a) => a._id === p.assetId)) {
-            currentSlotMap.set(`${page.pageIndex}-${i}`, p.assetId);
+            orderedAssetIds.push(p.assetId);
           }
         }
       }
     }
 
-    // 2. Tính số trang cần thiết (dựa trên tổng ảnh, đảm bảo đủ slot)
-    const totalPagesNeeded = Math.max(1, Math.ceil(assets.length / totalSlots));
+    // 2. Tính số trang cần thiết tối thiểu cho lượng ảnh đang xếp.
+    // Dựa trên số lượng ảnh thực sự đã được đưa vào luồng (orderedAssetIds).
+    const totalPagesNeeded = Math.max(
+      1,
+      Math.ceil(orderedAssetIds.length / totalSlots),
+    );
 
-    // 3. Build pages — chỉ giữ slot đã có placement, slot trống để trống
-    //    KHÔNG auto-fill: user phải kéo thả thủ công
+    // 3. Build pages
     const newPages: PrintPage[] = [];
+    let placedCount = 0;
 
     for (let pageIdx = 0; pageIdx < totalPagesNeeded; pageIdx++) {
       const placements: (typeof pages)[0]["placements"] = [];
 
       for (let slotIdx = 0; slotIdx < totalSlots; slotIdx++) {
-        const key = `${pageIdx}-${slotIdx}`;
-        const existingAssetId = currentSlotMap.get(key);
-
+        // Tọa độ luôn được tính dù có ảnh hay không để vẽ khung trống (nếu sau này cần layout tĩnh)
         const col = slotIdx % cols;
         const row = Math.floor(slotIdx / cols);
-        const x = bleed + col * (frame.width + padding);
-        const y = bleed + row * (frame.height + padding);
+        const x = startX + col * (frame.width + padding);
+        const y = startY + row * (frame.height + padding);
 
-        if (existingAssetId) {
-          // Giữ nguyên placement đã kéo thả trước đó
+        // Lấy asset tiếp theo từ thứ tự cũ
+        if (placedCount < orderedAssetIds.length) {
+          const assetId = orderedAssetIds[placedCount];
+          // Kế thừa transform data nếu nó đã được lưu cùng với orderedAssetIds
+          // Lưu ý: với thuật toán hiện tại flatten orderedAssetIds chỉ lưu mảng string id,
+          // nên khi resize Hàng/Cột, các setting scale/offset cũ thuộc về slot cũ sẽ bị reset.
+          // Đây là hành vi chấp nhận được để layout lưới mới được cleanly fit.
           placements[slotIdx] = {
-            assetId: existingAssetId,
+            assetId,
             x,
             y,
             width: frame.width,
             height: frame.height,
             rotation: 0,
+            imageScale: undefined,
+            imageOffsetX: undefined,
+            imageOffsetY: undefined,
+            imageRotation: 0,
           };
+          placedCount++;
         }
-        // Slot trống: không push gì → placements[slotIdx] = undefined
       }
 
       newPages.push({ pageIndex: pageIdx, placements });
@@ -445,9 +571,15 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       layout: layoutConfig,
     };
 
+    // Khi thu hẹp lưới, số trang có thể ít hơn so với vị trí user đang đứng
+    // => Cần đẩy currentPage ngược lại về trang cuối cùng có sẵn
+    const { currentPage } = get();
+    const clampedPage = Math.min(currentPage, Math.max(0, newPages.length - 1));
+
     set({
       pages: result.pages,
       nestingResult: result,
+      currentPage: clampedPage,
     });
   },
 }));
